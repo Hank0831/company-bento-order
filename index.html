@@ -87,6 +87,14 @@ function local(action, r) {
   switch (action) {
     case 'checkAdmin': return true;
     case 'saveDepts': db.depts = r.depts; return save(), true;
+    case 'openDays': {
+      const t = ymd(new Date()), from = ymd(new Date(Date.now() - 3 * 864e5));
+      return Object.values(db.days).filter(d => d.date >= from).sort((a, b) => a.date < b.date ? -1 : 1).map(d => ({
+        date: d.date, shopId: d.shopId, deadline: d.deadline,
+        shopName: (db.shops.find(s => s.id === d.shopId) || {}).name || '',
+        open: d.date >= t && !d.closed && (d.date !== t || !d.deadline || hm(new Date()) <= d.deadline),
+      }));
+    }
     case 'getAll': return { shops: db.shops, depts: db.depts, day: db.days[r.date] || null, orders: db.orders.filter(o => o.date === r.date) };
     case 'addOrder': {
       const d = db.days[r.date];
@@ -120,21 +128,33 @@ function local(action, r) {
 
 // ---------- State ----------
 const TODAY = ymd(new Date());
-const TOMORROW = ymd(new Date(Date.now() + 864e5));
 const S = {
-  tab: 'order', date: TODAY, shops: [], day: null, orders: [],
+  tab: 'order', date: TODAY, days: [], shops: [], day: null, orders: [],
   cart: {}, name: kv.get('bento_name'), note: '', dept: kv.get('bento_dept'), depts: [],
   pw: ss.get('bento_pw'), adminOk: false, editing: null,
 };
-const isOpen = d => !!d && !d.closed && (d.date !== TODAY || !d.deadline || hm(new Date()) <= d.deadline);
+const normT = t => String(t || '').replace(/^(\d):/, '0$1:'); // "9:30" → "09:30"
+const isOpen = d => !!d && !d.closed && (d.date !== TODAY || !d.deadline || hm(new Date()) <= normT(d.deadline));
 const shopOf = () => S.day && S.shops.find(s => s.id === S.day.shopId);
-// 同事端不選日期:今天有開放就看今天,否則看明天
+const fmtDate = d => {
+  const [y, m, dd] = d.split('-').map(Number);
+  return `${m}/${dd} 週${'日一二三四五六'[new Date(y, m - 1, dd).getDay()]}`;
+};
+// 同事端依日期點餐:點餐頁只列開放中的日期;部門統計頁連已截止的近期日期也列出
+const peopleDays = () => S.days.filter(d => d.open || (S.tab === 'dept' && d.date <= TODAY));
 async function loadForPeople() {
-  S.date = TODAY; await load();
-  if (!isOpen(S.day)) {
-    S.date = TOMORROW; await load();
-    if (!S.day) { S.date = TODAY; await load(); }
-  }
+  await run(async () => { S.days = await api('openDays'); });
+  const list = peopleDays();
+  if (!list.some(d => d.date === S.date)) S.date = list.length ? list[0].date : TODAY;
+  await load();
+}
+function setDate(d) { S.date = d; S.cart = {}; load(); }
+function dayBar() {
+  const list = peopleDays();
+  if (!list.length) return '';
+  return `<div class="card"><label>日期</label><div style="display:flex;flex-wrap:wrap;gap:8px">` +
+    list.map(d => `<button class="${d.date === S.date ? 'on' : ''}" onclick="setDate('${d.date}')">${fmtDate(d.date)} ${esc(d.shopName)}${d.open ? '' : '(已截止)'}</button>`).join('') +
+    '</div></div>';
 }
 
 function toast(msg) {
@@ -167,9 +187,15 @@ function render() {
     ({ order: viewOrder, dept: viewDept, admin: viewAdmin }[S.tab])();
 }
 
+const imgHtml = shop => !shop ? '' : (shop.images || []).map(src =>
+  `<a href="${esc(src)}" target="_blank"><img src="${esc(src)}" alt="${esc(shop.name)}菜單" loading="lazy"></a>`).join('');
+function showShopImgs(id) {
+  document.getElementById('d_imgs').innerHTML = imgHtml(S.shops.find(s => s.id === id));
+}
+
 function viewOrder() {
   const shop = shopOf();
-  if (!shop) return '<div class="card">目前還沒開單,請等輪值人員開單。</div>';
+  if (!shop || !peopleDays().some(d => d.date === S.date)) return '<div class="card">目前還沒開單,請等輪值人員開單。</div>';
   const open = isOpen(S.day);
   const status = open
     ? (S.day.deadline ? `截止 ${esc(S.day.deadline)}` : '點餐中')
@@ -178,15 +204,14 @@ function viewOrder() {
     <div class="item"><div>${esc(m.name)} <small>$${m.price}</small></div>
     <div class="qty"><button onclick="qty(${i},-1)" ${open ? '' : 'disabled'}>−</button><b>${S.cart[i] || 0}</b>
     <button onclick="qty(${i},1)" ${open ? '' : 'disabled'}>＋</button></div></div>`).join('');
-  const imgs = (shop.images || []).map(src =>
-    `<a href="${esc(src)}" target="_blank"><img src="${esc(src)}" alt="${esc(shop.name)}菜單" loading="lazy"></a>`).join('');
+  const imgs = imgHtml(shop);
   const total = shop.menu.reduce((t, m, i) => t + (S.cart[i] || 0) * m.price, 0);
   const orders = S.orders.map(o => `
     <div class="item"><div>${esc(o.dept ? o.dept + ' ' : '')}${esc(o.name)}:${esc(o.item)} ×${o.qty}${o.note ? ` <small>(${esc(o.note)})</small>` : ''}</div>
     ${open ? `<button class="link" onclick="cancel('${o.id}')">取消</button>` : ''}</div>`).join('');
-  return `
+  return dayBar() + `
     <div class="card"><h2>${esc(shop.name)}</h2>
-      <div class="sub">${esc(S.date)} · ${status}${shop.note ? ' · ' + esc(shop.note) : ''}</div></div>
+      <div class="sub">${fmtDate(S.date)} · ${status}${shop.note ? ' · ' + esc(shop.note) : ''}</div></div>
     ${imgs ? `<div class="card"><h2>菜單</h2>${imgs}<div class="sub">點圖片可放大;請在下方選擇品項</div></div>` : ''}
     <div class="card">
       ${S.depts.length ? `<label>部門</label><select onchange="S.dept=this.value;kv.set('bento_dept',this.value)"><option value="">請選擇</option>${S.depts.map(d => `<option ${d === S.dept ? 'selected' : ''}>${esc(d)}</option>`).join('')}</select>` : `<label>部門</label><input value="${esc(S.dept)}" oninput="S.dept=this.value;kv.set('bento_dept',this.value)" placeholder="例如:品保部">`}
@@ -196,7 +221,7 @@ function viewOrder() {
       <p><b>小計 $${total}</b></p>
       <button class="primary" style="width:100%" onclick="submitOrder()" ${open ? '' : 'disabled'}>送出訂單</button>
     </div>
-    <div class="card"><h2>今日已訂(${S.orders.length} 筆)</h2>${orders || '<div class="sub">還沒有人訂</div>'}</div>`;
+    <div class="card"><h2>已訂(${S.orders.length} 筆)</h2>${orders || '<div class="sub">還沒有人訂</div>'}</div>`;
 }
 
 function viewAdmin() {
@@ -211,7 +236,8 @@ function viewAdmin() {
   return `
     <div class="card"><h2>開單</h2>
       <label>日期</label><input type="date" id="d_date" value="${S.date}" onchange="S.date=this.value;load()">
-      <label>店家</label><select id="d_shop">${shopOpts}</select>
+      <label>店家</label><select id="d_shop" onchange="showShopImgs(this.value)">${shopOpts}</select>
+      <div id="d_imgs" style="margin-top:10px">${imgHtml(S.shops.find(s => s.id === (S.day ? S.day.shopId : '')) || S.shops[0])}</div>
       <label>截止時間(選填)</label><input type="time" id="d_dl" value="${esc(S.day ? S.day.deadline : '')}">
       <div class="row" style="margin-top:12px">
         <button class="primary" onclick="openDay()" ${S.shops.length ? '' : 'disabled'}>${S.day ? '更新開單' : '開單'}</button>
@@ -280,7 +306,7 @@ function viewShops() {
 }
 
 function viewDept() {
-  if (!S.depts.length) return '<div class="card">尚未設定部門,請輪值人員先到「輪值人員」分頁設定。</div>';
+  if (!S.depts.length) return dayBar() + '<div class="card">尚未設定部門,請輪值人員先到「輪值人員」分頁設定。</div>';
   const opts = '<option value="">請選擇部門</option>' + S.depts.map(d => `<option ${d === S.dept ? 'selected' : ''}>${esc(d)}</option>`).join('');
   let body = '';
   if (S.dept) {
@@ -300,7 +326,7 @@ function viewDept() {
          <div class="card"><h2>名單(收錢用)</h2><pre>${esc(people)}</pre></div>`
       : '<div class="card sub">這個部門還沒有人訂</div>';
   }
-  return `<div class="card"><label>部門</label>
+  return dayBar() + `<div class="card"><label>部門</label>
     <select onchange="S.dept=this.value;kv.set('bento_dept',this.value);render()">${opts}</select></div>` + body;
 }
 
