@@ -140,8 +140,8 @@ const fmtDate = d => {
   const [y, m, dd] = d.split('-').map(Number);
   return `${m}/${dd} 週${'日一二三四五六'[new Date(y, m - 1, dd).getDay()]}`;
 };
-// 同事端依日期點餐:點餐頁只列開放中的日期;部門統計頁連已截止的近期日期也列出
-const peopleDays = () => S.days.filter(d => d.open || (S.tab === 'dept' && d.date <= TODAY));
+// 同事端依日期點餐:只列開放中的日期
+const peopleDays = () => S.days.filter(d => d.open);
 async function loadForPeople() {
   await run(async () => { S.days = await api('openDays'); });
   const list = peopleDays();
@@ -182,9 +182,8 @@ function render() {
   const banner = API_URL ? '' : '<div class="banner">示範模式:資料只存在這台瀏覽器。部署後端後請設定 API_URL。</div>';
   document.getElementById('app').innerHTML = banner +
     `<nav><button class="${S.tab === 'order' ? 'on' : ''}" onclick="setTab('order')">我要點餐</button>
-     <button class="${S.tab === 'dept' ? 'on' : ''}" onclick="setTab('dept')">部門統計</button>
      <button class="${S.tab === 'admin' ? 'on' : ''}" onclick="setTab('admin')">輪值人員</button></nav>` +
-    ({ order: viewOrder, dept: viewDept, admin: viewAdmin }[S.tab])();
+    ({ order: viewOrder, admin: viewAdmin }[S.tab])();
 }
 
 const imgHtml = shop => !shop ? '' : (shop.images || []).map(src =>
@@ -214,7 +213,8 @@ function viewOrder() {
       <div class="sub">${fmtDate(S.date)} · ${status}${shop.note ? ' · ' + esc(shop.note) : ''}</div></div>
     ${imgs ? `<div class="card"><h2>菜單</h2>${imgs}<div class="sub">點圖片可放大;請在下方選擇品項</div></div>` : ''}
     <div class="card">
-      ${S.depts.length ? `<label>部門</label><select onchange="S.dept=this.value;kv.set('bento_dept',this.value)"><option value="">請選擇</option>${S.depts.map(d => `<option ${d === S.dept ? 'selected' : ''}>${esc(d)}</option>`).join('')}</select>` : `<label>部門</label><input value="${esc(S.dept)}" oninput="S.dept=this.value;kv.set('bento_dept',this.value)" placeholder="例如:品保部">`}
+      <label>部門</label><input list="deptlist" value="${esc(S.dept)}" oninput="S.dept=this.value;kv.set('bento_dept',this.value)" placeholder="例如:品保部">
+      <datalist id="deptlist">${[...new Set(S.orders.map(o => o.dept).filter(Boolean))].map(d => `<option value="${esc(d)}">`).join('')}</datalist>
       <label>姓名</label><input value="${esc(S.name)}" oninput="S.name=this.value" placeholder="你的名字">
       <div style="margin-top:10px">${menu}</div>
       <label>備註(例如:不要辣、飯少)</label><input value="${esc(S.note)}" oninput="S.note=this.value">
@@ -246,7 +246,6 @@ function viewAdmin() {
       <p class="sub">${S.day ? (open ? '目前開放中' : '已關單/已截止') : '這天還沒開單'}</p>
     </div>
     ${shop ? viewSummary(shop) : ''}
-    ${viewDepts()}
     ${viewShops()}`;
 }
 
@@ -273,7 +272,7 @@ function summaryText(shop) {
     return `${k} ×${v.qty} = $${v.qty * v.price}` + (v.notes.length ? `(${v.notes.join('、')})` : '');
   });
   return `【${shop.name}】${shop.phone || ''}\n${S.date} 訂購\n${lines.join('\n')}\n共 ${count} 份,合計 $${sum}`
-    + (S.depts.length ? '\n各部門:' + Object.entries(byDept).map(([k, v]) => `${k} ${v.qty}份`).join('、') : '');
+    + '\n各部門:' + Object.entries(byDept).map(([k, v]) => `${k} ${v.qty}份`).join('、');
 }
 
 function viewSummary(shop) {
@@ -303,45 +302,6 @@ function viewShops() {
   return `<div class="card"><h2>店家與菜單</h2>${list || '<div class="sub">還沒有店家</div>'}
       <p><button onclick="editShop()">＋ 新增店家</button>
       ${SEED_SHOPS.some(s => !S.shops.some(x => x.name === s.name)) ? ' <button onclick="importSeed()">匯入預設店家</button>' : ''}</p></div>${form}`;
-}
-
-function viewDept() {
-  if (!S.depts.length) return dayBar() + '<div class="card">尚未設定部門,請輪值人員先到「輪值人員」分頁設定。</div>';
-  const opts = '<option value="">請選擇部門</option>' + S.depts.map(d => `<option ${d === S.dept ? 'selected' : ''}>${esc(d)}</option>`).join('');
-  let body = '';
-  if (S.dept) {
-    const mine = S.orders.filter(o => o.dept === S.dept);
-    const { byItem, byPerson } = summaryData(mine);
-    let count = 0, sum = 0;
-    const items = Object.entries(byItem).map(([k, v]) => {
-      count += v.qty; sum += v.qty * v.price;
-      return `${k} ×${v.qty}` + (v.notes.length ? `(${v.notes.join('、')})` : '');
-    });
-    const people = Object.entries(byPerson).map(([n, p]) => `${n}:${p.items.join('、')} = $${p.sum}`).join('\n');
-    const shop = shopOf();
-    const text = `【${S.dept}】${S.date} ${shop ? shop.name : ''}\n${items.join('\n')}\n共 ${count} 份,合計 $${sum}`;
-    body = mine.length
-      ? `<div class="card"><h2>${esc(S.dept)}:${count} 份 · $${sum}</h2><pre>${esc(text)}</pre>
-          <button onclick="copy(${esc(JSON.stringify(text))})">複製(回報輪值人員)</button></div>
-         <div class="card"><h2>名單(收錢用)</h2><pre>${esc(people)}</pre></div>`
-      : '<div class="card sub">這個部門還沒有人訂</div>';
-  }
-  return dayBar() + `<div class="card"><label>部門</label>
-    <select onchange="S.dept=this.value;kv.set('bento_dept',this.value);render()">${opts}</select></div>` + body;
-}
-
-function viewDepts() {
-  return `<div class="card"><h2>部門設定</h2><label>一行一個部門</label>
-    <textarea id="depts" style="min-height:90px">${esc(S.depts.join('\n'))}</textarea>
-    <p><button onclick="saveDepts()">儲存部門</button></p></div>`;
-}
-
-function saveDepts() {
-  run(async () => {
-    const depts = document.getElementById('depts').value.split('\n').map(s => s.trim()).filter(Boolean);
-    await api('saveDepts', { depts });
-    toast('已儲存'); await load();
-  });
 }
 
 // ---------- Actions ----------
