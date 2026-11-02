@@ -1,0 +1,431 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>公司訂便當</title>
+<style>
+  :root { --bg:#f6f4ef; --card:#fff; --ink:#222; --sub:#777; --accent:#c8102e; --line:#e4e0d8; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#1c1b19; --card:#2a2926; --ink:#eee; --sub:#9a968c; --accent:#ff5a6e; --line:#3d3b36; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.5 system-ui,"Noto Sans TC","Microsoft JhengHei",sans-serif; }
+  main { max-width:640px; margin:0 auto; padding:0 16px 48px; }
+  h1 { font-size:20px; margin:16px 0 8px; }
+  h2 { font-size:17px; margin:0 0 10px; }
+  nav { display:flex; gap:8px; margin:8px 0 16px; }
+  nav button { flex:1; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px; margin-bottom:14px; }
+  button { font:inherit; padding:8px 14px; border-radius:8px; border:1px solid var(--line); background:var(--card); color:var(--ink); cursor:pointer; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button.on { border-color:var(--accent); color:var(--accent); font-weight:600; }
+  button.link { border:0; background:none; color:var(--accent); padding:4px 6px; }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  input, select, textarea { font:inherit; width:100%; padding:8px 10px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--ink); }
+  textarea { min-height:140px; }
+  main img { max-width:100%; height:auto; display:block; border-radius:8px; margin-bottom:8px; }
+  label { display:block; font-size:14px; color:var(--sub); margin:10px 0 4px; }
+  .row { display:flex; gap:8px; align-items:center; }
+  .row > * { flex:1; }
+  .item { display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid var(--line); }
+  .item:last-child { border-bottom:0; }
+  .item small, .sub { color:var(--sub); font-size:14px; }
+  .qty { display:flex; align-items:center; gap:10px; }
+  .qty button { width:34px; padding:4px 0; }
+  .qty b { min-width:18px; text-align:center; }
+  pre { white-space:pre-wrap; background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:10px; margin:8px 0; font:inherit; }
+  .banner { padding:8px 12px; border-radius:8px; background:#fff3cd; color:#664d03; font-size:14px; margin-bottom:12px; }
+  #toast { position:fixed; left:50%; bottom:24px; transform:translateX(-50%); background:#222; color:#fff; padding:10px 18px; border-radius:20px; display:none; max-width:90%; }
+</style>
+</head>
+<body>
+<main>
+  <h1>🍱 公司訂便當</h1>
+  <div id="app"></div>
+</main>
+<div id="toast"></div>
+
+<script src="shops_seed.js"></script>
+<script>
+// 部署 Code.gs 後,把網頁應用程式網址貼在這裡。留空 = 示範模式(資料只存在這台瀏覽器)。
+const API_URL = 'https://script.google.com/macros/s/AKfycbxx9HJmW6_AqSOph6jdTPLdVP0cOfOAnx1WfyOb20VJKMojsfso0D-V_FVVt8JaEVsb/exec';
+
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
+const pad = n => String(n).padStart(2, '0');
+const ymd = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const hm = d => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+const kv = {
+  get(k, d = '') { try { return localStorage.getItem(k) ?? d; } catch { return d; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch {} },
+};
+const ss = {
+  get(k) { try { return sessionStorage.getItem(k) || ''; } catch { return ''; } },
+  set(k, v) { try { sessionStorage.setItem(k, v); } catch {} },
+};
+
+// ---------- API ----------
+async function api(action, data = {}) {
+  if (!API_URL) return local(action, data);
+  const res = await fetch(API_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' }, // 避免 CORS preflight
+    body: JSON.stringify({ action, pw: S.pw, ...data }),
+  });
+  const j = await res.json();
+  if (!j.ok) throw new Error(j.error);
+  return j.data;
+}
+
+// 示範模式:邏輯與 Code.gs 對應,資料存 localStorage
+function local(action, r) {
+  const db = JSON.parse(kv.get('bento', '{"shops":[],"depts":[],"days":{},"orders":[]}'));
+  db.depts = db.depts || [];
+  const save = () => kv.set('bento', JSON.stringify(db));
+  const uid = () => Math.random().toString(36).slice(2, 10);
+  const open = d => d && !d.closed && (!d.deadline || hm(new Date()) <= d.deadline);
+  switch (action) {
+    case 'checkAdmin': return true;
+    case 'saveDepts': db.depts = r.depts; return save(), true;
+    case 'getAll': return { shops: db.shops, depts: db.depts, day: db.days[r.date] || null, orders: db.orders.filter(o => o.date === r.date) };
+    case 'addOrder': {
+      const d = db.days[r.date];
+      if (!open(d)) throw new Error('目前沒有開放點餐或已截止');
+      const shop = db.shops.find(s => s.id === d.shopId);
+      r.items.forEach(it => {
+        const m = shop.menu.find(x => x.name === it.item);
+        if (!m) throw new Error('菜單沒有「' + it.item + '」');
+        db.orders.push({ id: uid(), date: r.date, dept: r.dept || '', name: r.name.trim(), item: m.name, price: m.price, qty: it.qty, note: r.note || '', ts: Date.now() });
+      });
+      return save(), true;
+    }
+    case 'deleteOrder': {
+      const o = db.orders.find(x => x.id === r.id);
+      if (o && !open(db.days[o.date])) throw new Error('已截止,無法取消,請聯絡統計人');
+      db.orders = db.orders.filter(x => x.id !== r.id);
+      return save(), true;
+    }
+    case 'saveShop': {
+      const s = { ...r.shop, id: r.shop.id || uid() };
+      const i = db.shops.findIndex(x => x.id === s.id);
+      i >= 0 ? db.shops[i] = s : db.shops.push(s);
+      return save(), true;
+    }
+    case 'deleteShop': db.shops = db.shops.filter(s => s.id !== r.id); return save(), true;
+    case 'openDay': db.days[r.date] = { date: r.date, shopId: r.shopId, deadline: r.deadline || '', closed: false }; return save(), true;
+    case 'closeDay': if (db.days[r.date]) db.days[r.date].closed = true; return save(), true;
+  }
+  throw new Error('未知的動作');
+}
+
+// ---------- State ----------
+const TODAY = ymd(new Date());
+const TOMORROW = ymd(new Date(Date.now() + 864e5));
+const S = {
+  tab: 'order', date: TODAY, shops: [], day: null, orders: [],
+  cart: {}, name: kv.get('bento_name'), note: '', dept: kv.get('bento_dept'), depts: [],
+  pw: ss.get('bento_pw'), adminOk: false, editing: null,
+};
+const isOpen = d => !!d && !d.closed && (d.date !== TODAY || !d.deadline || hm(new Date()) <= d.deadline);
+const shopOf = () => S.day && S.shops.find(s => s.id === S.day.shopId);
+const dateBar = () => `<div class="row" style="margin-bottom:12px">
+  <button class="${S.date === TODAY ? 'on' : ''}" onclick="setDate('${TODAY}')">今天</button>
+  <button class="${S.date === TOMORROW ? 'on' : ''}" onclick="setDate('${TOMORROW}')">明天</button></div>`;
+function setDate(d) { S.date = d; load(); }
+
+function toast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.style.display = 'block';
+  clearTimeout(toast.t); toast.t = setTimeout(() => t.style.display = 'none', 2500);
+}
+async function run(fn) { try { await fn(); } catch (e) { toast(e.message || '發生錯誤'); } }
+
+async function load() {
+  await run(async () => {
+    const d = await api('getAll', { date: S.date });
+    Object.assign(S, { shops: d.shops, depts: d.depts || [], day: d.day, orders: d.orders });
+  });
+  render();
+}
+
+function setTab(t) {
+  S.tab = t;
+  if (t === 'order') S.date = TODAY;
+  load();
+}
+
+// ---------- Views ----------
+function render() {
+  const banner = API_URL ? '' : '<div class="banner">示範模式:資料只存在這台瀏覽器。部署後端後請設定 API_URL。</div>';
+  document.getElementById('app').innerHTML = banner +
+    `<nav><button class="${S.tab === 'order' ? 'on' : ''}" onclick="setTab('order')">我要點餐</button>
+     <button class="${S.tab === 'dept' ? 'on' : ''}" onclick="setTab('dept')">部門統計</button>
+     <button class="${S.tab === 'admin' ? 'on' : ''}" onclick="setTab('admin')">輪值人員</button></nav>` +
+    ({ order: viewOrder, dept: viewDept, admin: viewAdmin }[S.tab])();
+}
+
+function viewOrder() {
+  const shop = shopOf();
+  if (!shop) return dateBar() + `<div class="card">${S.date === TODAY ? '今天' : '明天'}還沒開單,請等輪值人員開單。</div>`;
+  const open = isOpen(S.day);
+  const status = open
+    ? (S.day.deadline ? `截止 ${esc(S.day.deadline)}` : '點餐中')
+    : '<b style="color:var(--accent)">已截止</b>';
+  const menu = shop.menu.map((m, i) => `
+    <div class="item"><div>${esc(m.name)} <small>$${m.price}</small></div>
+    <div class="qty"><button onclick="qty(${i},-1)" ${open ? '' : 'disabled'}>−</button><b>${S.cart[i] || 0}</b>
+    <button onclick="qty(${i},1)" ${open ? '' : 'disabled'}>＋</button></div></div>`).join('');
+  const imgs = (shop.images || []).map(src =>
+    `<a href="${esc(src)}" target="_blank"><img src="${esc(src)}" alt="${esc(shop.name)}菜單" loading="lazy"></a>`).join('');
+  const total = shop.menu.reduce((t, m, i) => t + (S.cart[i] || 0) * m.price, 0);
+  const orders = S.orders.map(o => `
+    <div class="item"><div>${esc(o.dept ? o.dept + ' ' : '')}${esc(o.name)}:${esc(o.item)} ×${o.qty}${o.note ? ` <small>(${esc(o.note)})</small>` : ''}</div>
+    ${open ? `<button class="link" onclick="cancel('${o.id}')">取消</button>` : ''}</div>`).join('');
+  return dateBar() + `
+    <div class="card"><h2>${esc(shop.name)}</h2>
+      <div class="sub">${esc(S.date)} · ${status}${shop.note ? ' · ' + esc(shop.note) : ''}</div></div>
+    ${imgs ? `<div class="card"><h2>菜單</h2>${imgs}<div class="sub">點圖片可放大;請在下方選擇品項</div></div>` : ''}
+    <div class="card">
+      ${S.depts.length ? `<label>部門</label><select onchange="S.dept=this.value;kv.set('bento_dept',this.value)"><option value="">請選擇</option>${S.depts.map(d => `<option ${d === S.dept ? 'selected' : ''}>${esc(d)}</option>`).join('')}</select>` : `<label>部門</label><input value="${esc(S.dept)}" oninput="S.dept=this.value;kv.set('bento_dept',this.value)" placeholder="例如:品保部">`}
+      <label>姓名</label><input value="${esc(S.name)}" oninput="S.name=this.value" placeholder="你的名字">
+      <div style="margin-top:10px">${menu}</div>
+      <label>備註(例如:不要辣、飯少)</label><input value="${esc(S.note)}" oninput="S.note=this.value">
+      <p><b>小計 $${total}</b></p>
+      <button class="primary" style="width:100%" onclick="submitOrder()" ${open ? '' : 'disabled'}>送出訂單</button>
+    </div>
+    <div class="card"><h2>今日已訂(${S.orders.length} 筆)</h2>${orders || '<div class="sub">還沒有人訂</div>'}</div>`;
+}
+
+function viewAdmin() {
+  if (!S.adminOk) {
+    return `<div class="card"><label>統計人密碼</label>
+      <input type="password" id="pw" value="${esc(S.pw)}" onkeydown="if(event.key==='Enter')login()">
+      <p><button class="primary" onclick="login()">登入</button></p></div>`;
+  }
+  const shop = shopOf();
+  const open = isOpen(S.day);
+  const shopOpts = S.shops.map(s => `<option value="${s.id}" ${S.day && S.day.shopId === s.id ? 'selected' : ''}>${esc(s.name)}</option>`).join('');
+  return `
+    <div class="card"><h2>開單</h2>
+      <label>日期</label><input type="date" id="d_date" value="${S.date}" onchange="S.date=this.value;load()">
+      <label>店家</label><select id="d_shop">${shopOpts}</select>
+      <label>截止時間(選填)</label><input type="time" id="d_dl" value="${esc(S.day ? S.day.deadline : '')}">
+      <div class="row" style="margin-top:12px">
+        <button class="primary" onclick="openDay()" ${S.shops.length ? '' : 'disabled'}>${S.day ? '更新開單' : '開單'}</button>
+        <button onclick="closeDay()" ${open ? '' : 'disabled'}>關單</button>
+      </div>
+      <p class="sub">${S.day ? (open ? '目前開放中' : '已關單/已截止') : '這天還沒開單'}</p>
+    </div>
+    ${shop ? viewSummary(shop) : ''}
+    ${viewDepts()}
+    ${viewShops()}`;
+}
+
+function summaryData(orders = S.orders) {
+  const byItem = {}, byPerson = {}, byDept = {};
+  orders.forEach(o => {
+    const dk = o.dept || '未填';
+    const dd = byDept[dk] || (byDept[dk] = { qty: 0, sum: 0 });
+    dd.qty += o.qty; dd.sum += o.price * o.qty;
+    const b = byItem[o.item] || (byItem[o.item] = { qty: 0, price: o.price, notes: [] });
+    b.qty += o.qty; if (o.note) b.notes.push(`${o.name}:${o.note}`);
+    const pk = (o.dept ? o.dept + ' ' : '') + o.name;
+    const p = byPerson[pk] || (byPerson[pk] = { items: [], sum: 0 });
+    p.items.push(`${o.item}×${o.qty}`); p.sum += o.price * o.qty;
+  });
+  return { byItem, byPerson, byDept };
+}
+
+function summaryText(shop) {
+  const { byItem, byDept } = summaryData();
+  let count = 0, sum = 0;
+  const lines = Object.entries(byItem).map(([k, v]) => {
+    count += v.qty; sum += v.qty * v.price;
+    return `${k} ×${v.qty} = $${v.qty * v.price}` + (v.notes.length ? `(${v.notes.join('、')})` : '');
+  });
+  return `【${shop.name}】${shop.phone || ''}\n${S.date} 訂購\n${lines.join('\n')}\n共 ${count} 份,合計 $${sum}`
+    + (S.depts.length ? '\n各部門:' + Object.entries(byDept).map(([k, v]) => `${k} ${v.qty}份`).join('、') : '');
+}
+
+function viewSummary(shop) {
+  const { byPerson } = summaryData();
+  const people = Object.entries(byPerson).sort(([a], [b]) => a.localeCompare(b, 'zh-Hant')).map(([n, p]) => `${n}:${p.items.join('、')} = $${p.sum}`).join('\n');
+  if (!S.orders.length) return '<div class="card"><h2>訂購彙整單</h2><div class="sub">還沒有人訂</div></div>';
+  return `<div class="card"><h2>訂購彙整單(打電話用)</h2><pre id="sum">${esc(summaryText(shop))}</pre>
+      <button onclick="copy(summaryText(shopOf()))">複製</button></div>
+    <div class="card"><h2>個人明細(收錢用)</h2><pre>${esc(people)}</pre>
+      <button onclick="copy(${esc(JSON.stringify(people))})">複製</button></div>`;
+}
+
+function viewShops() {
+  const list = S.shops.map(s => `
+    <div class="item"><div>${esc(s.name)} <small>${esc(s.phone || '')} · ${s.menu.length} 品項</small></div>
+    <div><button class="link" onclick="editShop('${s.id}')">編輯</button><button class="link" onclick="delShop('${s.id}')">刪除</button></div></div>`).join('');
+  const e = S.editing;
+  const form = e ? `<div class="card"><h2>${e.id ? '編輯店家' : '新增店家'}</h2>
+      <label>店名</label><input id="s_name" value="${esc(e.name)}">
+      <label>電話</label><input id="s_phone" value="${esc(e.phone)}">
+      <label>備註(例如:要提早訂、滿額外送)</label><input id="s_note" value="${esc(e.note)}">
+      <label>菜單圖片(檔名,一行一個;圖檔放在 menus 資料夾,例如 menus/abc.jpg)</label>
+      <textarea id="s_imgs" style="min-height:60px">${esc((e.images || []).join('\n'))}</textarea>
+      <label>菜單(一行一個,格式:品項 價格)</label>
+      <textarea id="s_menu" placeholder="排骨飯 90&#10;雞腿飯 95">${esc(e.menu.map(m => m.name + ' ' + m.price).join('\n'))}</textarea>
+      <div class="row" style="margin-top:12px"><button class="primary" onclick="saveShop()">儲存</button><button onclick="S.editing=null;render()">取消</button></div></div>` : '';
+  return `<div class="card"><h2>店家與菜單</h2>${list || '<div class="sub">還沒有店家</div>'}
+      <p><button onclick="editShop()">＋ 新增店家</button>
+      ${SEED_SHOPS.some(s => !S.shops.some(x => x.name === s.name)) ? ' <button onclick="importSeed()">匯入預設店家</button>' : ''}</p></div>${form}`;
+}
+
+function viewDept() {
+  if (!S.depts.length) return dateBar() + '<div class="card">尚未設定部門,請輪值人員先到「輪值人員」分頁設定。</div>';
+  const opts = '<option value="">請選擇部門</option>' + S.depts.map(d => `<option ${d === S.dept ? 'selected' : ''}>${esc(d)}</option>`).join('');
+  let body = '';
+  if (S.dept) {
+    const mine = S.orders.filter(o => o.dept === S.dept);
+    const { byItem, byPerson } = summaryData(mine);
+    let count = 0, sum = 0;
+    const items = Object.entries(byItem).map(([k, v]) => {
+      count += v.qty; sum += v.qty * v.price;
+      return `${k} ×${v.qty}` + (v.notes.length ? `(${v.notes.join('、')})` : '');
+    });
+    const people = Object.entries(byPerson).map(([n, p]) => `${n}:${p.items.join('、')} = $${p.sum}`).join('\n');
+    const shop = shopOf();
+    const text = `【${S.dept}】${S.date} ${shop ? shop.name : ''}\n${items.join('\n')}\n共 ${count} 份,合計 $${sum}`;
+    body = mine.length
+      ? `<div class="card"><h2>${esc(S.dept)}:${count} 份 · $${sum}</h2><pre>${esc(text)}</pre>
+          <button onclick="copy(${esc(JSON.stringify(text))})">複製(回報輪值人員)</button></div>
+         <div class="card"><h2>名單(收錢用)</h2><pre>${esc(people)}</pre></div>`
+      : '<div class="card sub">這個部門還沒有人訂</div>';
+  }
+  return dateBar() + `<div class="card"><label>部門</label>
+    <select onchange="S.dept=this.value;kv.set('bento_dept',this.value);render()">${opts}</select></div>` + body;
+}
+
+function viewDepts() {
+  return `<div class="card"><h2>部門設定</h2><label>一行一個部門</label>
+    <textarea id="depts" style="min-height:90px">${esc(S.depts.join('\n'))}</textarea>
+    <p><button onclick="saveDepts()">儲存部門</button></p></div>`;
+}
+
+function saveDepts() {
+  run(async () => {
+    const depts = document.getElementById('depts').value.split('\n').map(s => s.trim()).filter(Boolean);
+    await api('saveDepts', { depts });
+    toast('已儲存'); await load();
+  });
+}
+
+// ---------- Actions ----------
+function qty(i, d) {
+  S.cart[i] = Math.max(0, Math.min(20, (S.cart[i] || 0) + d));
+  render();
+}
+
+function submitOrder() {
+  run(async () => {
+    const name = S.name.trim();
+    if (!name) throw new Error('請輸入姓名');
+    if (!S.dept.trim()) throw new Error('請填寫部門');
+    const shop = shopOf();
+    const items = shop.menu.map((m, i) => ({ item: m.name, qty: S.cart[i] || 0 })).filter(x => x.qty > 0);
+    if (!items.length) throw new Error('請至少選一個品項');
+    await api('addOrder', { date: S.date, dept: S.dept, name, items, note: S.note.trim() });
+    kv.set('bento_name', name);
+    S.cart = {}; S.note = '';
+    toast('已送出 ✓');
+    await load();
+  });
+}
+
+function cancel(id) {
+  run(async () => { await api('deleteOrder', { id }); await load(); });
+}
+
+function login() {
+  run(async () => {
+    S.pw = document.getElementById('pw').value;
+    await api('checkAdmin');
+    ss.set('bento_pw', S.pw); S.adminOk = true;
+    await load();
+  });
+}
+
+function openDay() {
+  run(async () => {
+    await api('openDay', {
+      date: document.getElementById('d_date').value,
+      shopId: document.getElementById('d_shop').value,
+      deadline: document.getElementById('d_dl').value,
+    });
+    toast('已開單'); await load();
+  });
+}
+
+function closeDay() {
+  run(async () => { await api('closeDay', { date: S.date }); toast('已關單'); await load(); });
+}
+
+function editShop(id) {
+  S.editing = id ? JSON.parse(JSON.stringify(S.shops.find(s => s.id === id))) : { name: '', phone: '', note: '', menu: [] };
+  render();
+}
+
+function parseMenu(text) {
+  return text.split('\n').map(l => l.trim()).filter(Boolean).map(l => {
+    const m = l.match(/^(.+?)[\s,，]+(\d+)$/);
+    if (!m) throw new Error(`菜單格式錯誤:「${l}」,請用「品項 價格」`);
+    return { name: m[1].trim(), price: Number(m[2]) };
+  });
+}
+
+function importSeed() {
+  run(async () => {
+    const have = new Set(S.shops.map(s => s.name));
+    const todo = SEED_SHOPS.filter(s => !have.has(s.name));
+    for (let i = 0; i < todo.length; i++) {
+      toast(`匯入中 ${i + 1}/${todo.length}:${todo[i].name}`);
+      await api('saveShop', { shop: { ...todo[i], menu: parseMenu(todo[i].menu) } });
+    }
+    toast(`已匯入 ${todo.length} 家店`); await load();
+  });
+}
+
+function saveShop() {
+  run(async () => {
+    const menu = parseMenu(document.getElementById('s_menu').value);
+    if (!menu.length) throw new Error('菜單至少要有一個品項');
+    await api('saveShop', { shop: {
+      id: S.editing.id,
+      name: document.getElementById('s_name').value.trim(),
+      phone: document.getElementById('s_phone').value.trim(),
+      note: document.getElementById('s_note').value.trim(),
+      images: document.getElementById('s_imgs').value.split('\n').map(s => s.trim()).filter(Boolean),
+      menu,
+    } });
+    S.editing = null; toast('已儲存'); await load();
+  });
+}
+
+function delShop(id) {
+  const s = S.shops.find(x => x.id === id);
+  if (!confirm(`刪除「${s.name}」?`)) return;
+  run(async () => { await api('deleteShop', { id }); await load(); });
+}
+
+async function copy(text) {
+  try { await navigator.clipboard.writeText(text); toast('已複製'); }
+  catch { toast('無法自動複製,請手動長按選取文字'); }
+}
+
+// 已輸入過密碼的話自動驗證
+(async () => {
+  if (S.pw || !API_URL) { try { await api('checkAdmin'); S.adminOk = true; } catch {} }
+  await load();
+  if (!S.day) { // 今天沒開單就看明天有沒有
+    S.date = TOMORROW; await load();
+    if (!S.day) { S.date = TODAY; await load(); }
+  }
+})();
+</script>
+</body>
+</html>
