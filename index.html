@@ -128,10 +128,14 @@ const S = {
 };
 const isOpen = d => !!d && !d.closed && (d.date !== TODAY || !d.deadline || hm(new Date()) <= d.deadline);
 const shopOf = () => S.day && S.shops.find(s => s.id === S.day.shopId);
-const dateBar = () => `<div class="row" style="margin-bottom:12px">
-  <button class="${S.date === TODAY ? 'on' : ''}" onclick="setDate('${TODAY}')">今天</button>
-  <button class="${S.date === TOMORROW ? 'on' : ''}" onclick="setDate('${TOMORROW}')">明天</button></div>`;
-function setDate(d) { S.date = d; load(); }
+// 同事端不選日期:今天有開放就看今天,否則看明天
+async function loadForPeople() {
+  S.date = TODAY; await load();
+  if (!isOpen(S.day)) {
+    S.date = TOMORROW; await load();
+    if (!S.day) { S.date = TODAY; await load(); }
+  }
+}
 
 function toast(msg) {
   const t = document.getElementById('toast');
@@ -150,8 +154,7 @@ async function load() {
 
 function setTab(t) {
   S.tab = t;
-  if (t === 'order') S.date = TODAY;
-  load();
+  if (t === 'admin') load(); else loadForPeople();
 }
 
 // ---------- Views ----------
@@ -166,7 +169,7 @@ function render() {
 
 function viewOrder() {
   const shop = shopOf();
-  if (!shop) return dateBar() + `<div class="card">${S.date === TODAY ? '今天' : '明天'}還沒開單,請等輪值人員開單。</div>`;
+  if (!shop) return '<div class="card">目前還沒開單,請等輪值人員開單。</div>';
   const open = isOpen(S.day);
   const status = open
     ? (S.day.deadline ? `截止 ${esc(S.day.deadline)}` : '點餐中')
@@ -181,7 +184,7 @@ function viewOrder() {
   const orders = S.orders.map(o => `
     <div class="item"><div>${esc(o.dept ? o.dept + ' ' : '')}${esc(o.name)}:${esc(o.item)} ×${o.qty}${o.note ? ` <small>(${esc(o.note)})</small>` : ''}</div>
     ${open ? `<button class="link" onclick="cancel('${o.id}')">取消</button>` : ''}</div>`).join('');
-  return dateBar() + `
+  return `
     <div class="card"><h2>${esc(shop.name)}</h2>
       <div class="sub">${esc(S.date)} · ${status}${shop.note ? ' · ' + esc(shop.note) : ''}</div></div>
     ${imgs ? `<div class="card"><h2>菜單</h2>${imgs}<div class="sub">點圖片可放大;請在下方選擇品項</div></div>` : ''}
@@ -277,7 +280,7 @@ function viewShops() {
 }
 
 function viewDept() {
-  if (!S.depts.length) return dateBar() + '<div class="card">尚未設定部門,請輪值人員先到「輪值人員」分頁設定。</div>';
+  if (!S.depts.length) return '<div class="card">尚未設定部門,請輪值人員先到「輪值人員」分頁設定。</div>';
   const opts = '<option value="">請選擇部門</option>' + S.depts.map(d => `<option ${d === S.dept ? 'selected' : ''}>${esc(d)}</option>`).join('');
   let body = '';
   if (S.dept) {
@@ -297,7 +300,7 @@ function viewDept() {
          <div class="card"><h2>名單(收錢用)</h2><pre>${esc(people)}</pre></div>`
       : '<div class="card sub">這個部門還沒有人訂</div>';
   }
-  return dateBar() + `<div class="card"><label>部門</label>
+  return `<div class="card"><label>部門</label>
     <select onchange="S.dept=this.value;kv.set('bento_dept',this.value);render()">${opts}</select></div>` + body;
 }
 
@@ -420,11 +423,7 @@ async function copy(text) {
 // 已輸入過密碼的話自動驗證
 (async () => {
   if (S.pw || !API_URL) { try { await api('checkAdmin'); S.adminOk = true; } catch {} }
-  await load();
-  if (!S.day) { // 今天沒開單就看明天有沒有
-    S.date = TOMORROW; await load();
-    if (!S.day) { S.date = TODAY; await load(); }
-  }
+  await loadForPeople();
 })();
 </script>
 </body>
