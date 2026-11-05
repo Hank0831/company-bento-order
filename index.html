@@ -322,6 +322,9 @@ function viewSummary(shop) {
   return `<div class="card"><h2>訂購彙整單(打電話用)</h2><pre id="sum">${esc(summaryText(shop))}</pre>
       <button onclick="copy(summaryText(shopOf()))">複製</button></div>
     ${viewMatrix(shop)}
+    <div class="card"><h2>全部訂單(重複的可刪除)</h2>${S.orders.map(o => `
+      <div class="item"><div>${esc(o.dept ? o.dept + ' ' : '')}${esc(o.name)}:${esc(o.item)} ×${o.qty}</div>
+      <button class="link" onclick="if(confirm('刪除這筆?'))cancel('${o.id}')">刪除</button></div>`).join('')}</div>
     <div class="card"><h2>個人明細(收錢用)</h2><pre>${esc(people)}</pre>
       <button onclick="copy(${esc(JSON.stringify(people))})">複製</button></div>`;
 }
@@ -352,6 +355,8 @@ function qty(i, d) {
 }
 
 function submitOrder() {
+  if (S.busy) return; // 連點兩次會重複送出
+  S.busy = true;
   run(async () => {
     const val = id => (document.getElementById(id) || {}).value || '';
     S.dept = val('o_dept'); S.name = val('o_name'); S.note = val('o_note'); // 直接讀畫面上的欄位,避免狀態不同步
@@ -366,7 +371,7 @@ function submitOrder() {
     S.cart = {}; S.note = '';
     toast('已送出 ✓');
     await load();
-  });
+  }).finally(() => { S.busy = false; });
 }
 
 function cancel(id) {
