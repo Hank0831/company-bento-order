@@ -36,6 +36,11 @@
   .qty b { min-width:18px; text-align:center; }
   pre { white-space:pre-wrap; background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:10px; margin:8px 0; font:inherit; }
   .banner { padding:8px 12px; border-radius:8px; background:#fff3cd; color:#664d03; font-size:14px; margin-bottom:12px; }
+  .tbl-wrap { overflow-x:auto; margin:8px 0; }
+  .tbl { border-collapse:collapse; width:100%; font-size:14px; }
+  .tbl th, .tbl td { border:1px solid var(--line); padding:4px 8px; text-align:center; white-space:nowrap; }
+  .tbl td.l { text-align:left; }
+  .tbl tfoot td { font-weight:600; background:var(--bg); }
   #toast { position:fixed; left:50%; bottom:24px; transform:translateX(-50%); background:#222; color:#fff; padding:10px 18px; border-radius:20px; display:none; max-width:90%; }
 </style>
 </head>
@@ -166,6 +171,7 @@ async function run(fn) { try { await fn(); } catch (e) { toast(e.message || '發
 
 async function load() {
   await run(async () => {
+    if (S.tab === 'admin') S.days = await api('openDays');
     const d = await api('getAll', { date: S.date });
     Object.assign(S, { shops: d.shops, depts: d.depts || [], day: d.day, orders: d.orders });
   });
@@ -213,11 +219,11 @@ function viewOrder() {
       <div class="sub">${fmtDate(S.date)} · ${status}${shop.note ? ' · ' + esc(shop.note) : ''}</div></div>
     ${imgs ? `<div class="card"><h2>菜單</h2>${imgs}<div class="sub">點圖片可放大;請在下方選擇品項</div></div>` : ''}
     <div class="card">
-      <label>部門</label><input list="deptlist" value="${esc(S.dept)}" oninput="S.dept=this.value;kv.set('bento_dept',this.value)" placeholder="例如:品保部">
+      <label>部門 <span style="color:var(--accent)">*必填</span></label><input id="o_dept" list="deptlist" value="${esc(S.dept)}" oninput="S.dept=this.value;kv.set('bento_dept',this.value)" placeholder="例如:RD、品保、3F">
       <datalist id="deptlist">${[...new Set(S.orders.map(o => o.dept).filter(Boolean))].map(d => `<option value="${esc(d)}">`).join('')}</datalist>
-      <label>姓名</label><input value="${esc(S.name)}" oninput="S.name=this.value" placeholder="你的名字">
+      <label>姓名 <span style="color:var(--accent)">*必填</span></label><input id="o_name" value="${esc(S.name)}" oninput="S.name=this.value" placeholder="你的名字">
       <div style="margin-top:10px">${menu}</div>
-      <label>備註(例如:不要辣、飯少)</label><input value="${esc(S.note)}" oninput="S.note=this.value">
+      <label>備註(選填,例如:不要辣、飯少;部門請填在上面的「部門」欄)</label><input id="o_note" value="${esc(S.note)}" oninput="S.note=this.value">
       <p><b>小計 $${total}</b></p>
       <button class="primary" style="width:100%" onclick="submitOrder()" ${open ? '' : 'disabled'}>送出訂單</button>
     </div>
@@ -235,7 +241,9 @@ function viewAdmin() {
   const shopOpts = S.shops.map(s => `<option value="${s.id}" ${S.day && S.day.shopId === s.id ? 'selected' : ''}>${esc(s.name)}</option>`).join('');
   return `
     <div class="card"><h2>開單</h2>
-      <label>日期</label><input type="date" id="d_date" value="${S.date}" onchange="S.date=this.value;load()">
+      ${S.days.length ? `<label>已開單的日期(點選可查看統計/修改)</label><div style="display:flex;flex-wrap:wrap;gap:8px">` +
+        S.days.map(d => `<button class="${d.date === S.date ? 'on' : ''}" onclick="S.date='${d.date}';load()">${fmtDate(d.date)} ${esc(d.shopName)}${d.open ? '' : '(已截止)'}</button>`).join('') + '</div>' : ''}
+      <label>開新的日期(或改日期)</label><input type="date" id="d_date" value="${S.date}" onchange="S.date=this.value;load()">
       <label>店家</label><select id="d_shop" onchange="showShopImgs(this.value)">${shopOpts}</select>
       <div id="d_imgs" style="margin-top:10px">${imgHtml(S.shops.find(s => s.id === (S.day ? S.day.shopId : '')) || S.shops[0])}</div>
       <label>截止時間(選填)</label><input type="time" id="d_dl" value="${esc(S.day ? S.day.deadline : '')}">
@@ -275,12 +283,45 @@ function summaryText(shop) {
     + '\n各部門:' + Object.entries(byDept).map(([k, v]) => `${k} ${v.qty}份`).join('、');
 }
 
+// 品項 × 部門 的統計表
+function summaryMatrix(shop) {
+  const dk = o => o.dept || '未填';
+  const depts = [...new Set(S.orders.map(dk))].sort((a, b) => a.localeCompare(b, 'zh-Hant'));
+  const order = n => { const i = shop.menu.findIndex(m => m.name === n); return i < 0 ? 999 : i; };
+  const names = [...new Set(S.orders.map(o => o.item))].sort((a, b) => order(a) - order(b));
+  const rows = names.map(n => {
+    const os = S.orders.filter(o => o.item === n);
+    const per = depts.map(d => os.filter(o => dk(o) === d).reduce((t, o) => t + o.qty, 0));
+    return { name: n, price: os[0].price, per, qty: per.reduce((a, b) => a + b, 0) };
+  });
+  const deptSum = depts.map(d => S.orders.filter(o => dk(o) === d).reduce((t, o) => t + o.price * o.qty, 0));
+  return { depts, rows, deptSum, count: rows.reduce((t, r) => t + r.qty, 0), sum: deptSum.reduce((a, b) => a + b, 0) };
+}
+
+function matrixTsv(shop) {
+  const m = summaryMatrix(shop);
+  return [['計數', '品項', '單價', ...m.depts].join('\t'),
+    ...m.rows.map(r => [r.qty, r.name, r.price, ...r.per.map(q => q || '')].join('\t')),
+    ['總數 ' + m.count, '總金額 ' + m.sum, '', ...m.deptSum].join('\t')].join('\n');
+}
+
+function viewMatrix(shop) {
+  const m = summaryMatrix(shop);
+  return `<div class="card"><h2>統計表(品項 × 部門)</h2><div class="tbl-wrap"><table class="tbl">
+    <thead><tr><th>計數</th><th>品項</th><th>單價</th>${m.depts.map(d => `<th>${esc(d)}</th>`).join('')}</tr></thead>
+    <tbody>${m.rows.map(r => `<tr><td>${r.qty}</td><td class="l">${esc(r.name)}</td><td>${r.price}</td>${r.per.map(q => `<td>${q || ''}</td>`).join('')}</tr>`).join('')}</tbody>
+    <tfoot><tr><td>總數 ${m.count}</td><td class="l">總金額 $${m.sum.toLocaleString()}</td><td></td>${m.deptSum.map(s => `<td>${s}</td>`).join('')}</tr></tfoot>
+    </table></div><div class="sub">最下面一列是各部門應收金額。</div>
+    <button onclick="copy(matrixTsv(shopOf()))">複製表格(可貼到 Excel / Google 試算表)</button></div>`;
+}
+
 function viewSummary(shop) {
   const { byPerson } = summaryData();
   const people = Object.entries(byPerson).sort(([a], [b]) => a.localeCompare(b, 'zh-Hant')).map(([n, p]) => `${n}:${p.items.join('、')} = $${p.sum}`).join('\n');
   if (!S.orders.length) return '<div class="card"><h2>訂購彙整單</h2><div class="sub">還沒有人訂</div></div>';
   return `<div class="card"><h2>訂購彙整單(打電話用)</h2><pre id="sum">${esc(summaryText(shop))}</pre>
       <button onclick="copy(summaryText(shopOf()))">複製</button></div>
+    ${viewMatrix(shop)}
     <div class="card"><h2>個人明細(收錢用)</h2><pre>${esc(people)}</pre>
       <button onclick="copy(${esc(JSON.stringify(people))})">複製</button></div>`;
 }
@@ -312,9 +353,11 @@ function qty(i, d) {
 
 function submitOrder() {
   run(async () => {
+    const val = id => (document.getElementById(id) || {}).value || '';
+    S.dept = val('o_dept'); S.name = val('o_name'); S.note = val('o_note'); // 直接讀畫面上的欄位,避免狀態不同步
     const name = S.name.trim();
-    if (!name) throw new Error('請輸入姓名');
-    if (!S.dept.trim()) throw new Error('請填寫部門');
+    if (!S.dept.trim()) { document.getElementById('o_dept').focus(); throw new Error('請在「部門」欄填寫部門(備註欄不算)'); }
+    if (!name) { document.getElementById('o_name').focus(); throw new Error('請輸入姓名'); }
     const shop = shopOf();
     const items = shop.menu.map((m, i) => ({ item: m.name, qty: S.cart[i] || 0 })).filter(x => x.qty > 0);
     if (!items.length) throw new Error('請至少選一個品項');
