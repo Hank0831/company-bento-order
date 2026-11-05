@@ -243,7 +243,7 @@ function viewAdmin() {
   return `
     <div class="card"><h2>開單</h2>
       ${S.days.length ? `<label>已開單的日期(點選可查看統計/修改)</label><div style="display:flex;flex-wrap:wrap;gap:8px">` +
-        S.days.map(d => `<button class="${d.date === S.date ? 'on' : ''}" onclick="S.date='${d.date}';load()">${fmtDate(d.date)} ${esc(d.shopName)}${d.open ? '' : '(已截止)'}</button>`).join('') + '</div>' : ''}
+        [...S.days.filter(d => d.date >= TODAY), ...S.days.filter(d => d.date < TODAY)].map(d => `<button class="${d.date === S.date ? 'on' : ''}" onclick="S.date='${d.date}';load()">${fmtDate(d.date)} ${esc(d.shopName)}${d.open ? '' : '(已截止)'}</button>`).join('') + '</div>' : ''}
       <label>開新的日期(或改日期)</label><input type="date" id="d_date" value="${S.date}" onchange="S.date=this.value;load()">
       <label>店家</label><select id="d_shop" onchange="showShopImgs(this.value)">${shopOpts}</select>
       <div id="d_imgs" style="margin-top:10px">${imgHtml(S.shops.find(s => s.id === (S.day ? S.day.shopId : '')) || S.shops[0])}</div>
