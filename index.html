@@ -225,7 +225,7 @@ function viewOrder() {
       <div style="margin-top:10px">${menu}</div>
       <label>備註(選填,例如:不要辣、飯少;部門請填在上面的「部門」欄)</label><input id="o_note" value="${esc(S.note)}" oninput="S.note=this.value">
       <p><b>小計 $${total}</b></p>
-      <button class="primary" style="width:100%" onclick="submitOrder()" ${open ? '' : 'disabled'}>送出訂單</button>
+      <button class="primary" style="width:100%" onclick="submitOrder()" ${open && !S.sent ? '' : 'disabled'}>${S.sent ? '✓ 已送出(要再訂請重新選品項)' : '送出訂單'}</button>
     </div>
     <div class="card"><h2>已訂(${S.orders.length} 筆)</h2>${orders || '<div class="sub">還沒有人訂</div>'}</div>
     ${S.orders.length ? viewMatrix(shop) : ''}`;
@@ -351,6 +351,7 @@ function viewShops() {
 
 // ---------- Actions ----------
 function qty(i, d) {
+  S.sent = false;
   S.cart[i] = Math.max(0, Math.min(20, (S.cart[i] || 0) + d));
   render();
 }
@@ -375,6 +376,7 @@ function submitOrder() {
     kv.set('bento_name', name);
     S.cart = {}; S.note = '';
     toast('已送出 ✓');
+    S.sent = true;
     await load();
   }).finally(() => { S.busy = false; if (btn && btn.isConnected) { btn.disabled = false; btn.textContent = '送出訂單'; } });
 }
